@@ -1360,6 +1360,45 @@ export type ReindexResult = {
 };
 
 /**
+ * Glob a collection's files for indexing, including any per-collection
+ * allow-listed dot-directories (`includeDotDirs`, e.g. `["claude"]`) while
+ * still excluding every other hidden file/folder. Defaults to excluding all
+ * dot-directories, same as before this option existed — nothing is indexed
+ * under a hidden path unless a collection opts in.
+ *
+ * fast-glob's `dot: false` (used for the main pass) keeps `**` from ever
+ * descending into ANY dot-prefixed directory, which is what we want for
+ * `.git`/`.venv`/`.cache`/etc. — those can be multi-gigabyte trees and are
+ * never meant to be indexed. Flipping `dot: true` globally would make the
+ * crawler walk all of those before filtering them back out, which is both
+ * slow and easy to get wrong. Instead, for each allow-listed name we run a
+ * second, narrowly-scoped glob using an explicit path segment — an explicit
+ * dot segment in a glob pattern always matches regardless of the `dot`
+ * option, so this doesn't touch the main crawl's traversal behavior at all.
+ */
+export async function globCollectionFiles(
+  globPattern: string,
+  options: { cwd: string; ignore: string[]; includeDotDirs?: string[] }
+): Promise<string[]> {
+  const { cwd, ignore, includeDotDirs = [] } = options;
+  const globOptions = { cwd, onlyFiles: true, followSymbolicLinks: false, dot: false, ignore };
+  const mainFiles: string[] = await fastGlob(globPattern, globOptions);
+  const dotDirFiles: string[] = (
+    await Promise.all(
+      includeDotDirs.map(name => fastGlob(`**/.${name}/${globPattern}`, globOptions))
+    )
+  ).flat();
+
+  const combined = new Set([...mainFiles, ...dotDirFiles]);
+  // Final safety net: strip any path containing a hidden path segment that
+  // isn't one of this collection's explicitly allow-listed directory names.
+  return Array.from(combined).filter(file => {
+    const parts = file.split("/");
+    return !parts.some(part => part.startsWith(".") && !includeDotDirs.includes(part.slice(1)));
+  });
+}
+
+/**
  * Re-index a single collection by scanning the filesystem and updating the database.
  * Pure function — no console output, no db lifecycle management.
  */
@@ -1370,6 +1409,7 @@ export async function reindexCollection(
   collectionName: string,
   options?: {
     ignorePatterns?: string[];
+    includeDotDirs?: string[];
     onProgress?: (info: ReindexProgress) => void;
   }
 ): Promise<ReindexResult> {
@@ -1381,17 +1421,10 @@ export async function reindexCollection(
     ...excludeDirs.map(d => `**/${d}/**`),
     ...(options?.ignorePatterns || []),
   ];
-  const allFiles: string[] = await fastGlob(globPattern, {
+  const files = await globCollectionFiles(globPattern, {
     cwd: collectionPath,
-    onlyFiles: true,
-    followSymbolicLinks: false,
-    dot: false,
     ignore: allIgnore,
-  });
-  // Filter hidden files/folders
-  const files = allFiles.filter(file => {
-    const parts = file.split("/");
-    return !parts.some(part => part.startsWith("."));
+    includeDotDirs: options?.includeDotDirs,
   });
 
   const total = files.length;

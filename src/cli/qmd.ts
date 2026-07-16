@@ -1,6 +1,5 @@
 import { isBun, openDatabase } from "../db.js";
 import type { Database, SQLiteValue } from "../db.js";
-import fastGlob from "fast-glob";
 import { execSync, spawn as nodeSpawn } from "child_process";
 import { fileURLToPath } from "url";
 import { basename, dirname, join as pathJoin, relative as relativePath, resolve as pathResolve } from "path";
@@ -74,6 +73,7 @@ import {
   createStore,
   getDefaultDbPath,
   reindexCollection,
+  globCollectionFiles,
   generateEmbeddings,
   maybeAdoptLegacyEmbeddingFingerprint,
   syncConfigToDb,
@@ -721,6 +721,7 @@ async function updateCollections(): Promise<void> {
 
     const result = await reindexCollection(storeInstance, col.pwd, col.glob_pattern, col.name, {
       ignorePatterns: yamlCol?.ignore,
+      includeDotDirs: yamlCol?.includeDotDirs,
       onProgress: (info) => {
         progress.set((info.current / info.total) * 100);
         const elapsed = (Date.now() - startTime) / 1000;
@@ -1552,6 +1553,9 @@ function collectionList(): void {
     if (yamlColl?.ignore?.length) {
       console.log(`  ${c.dim}Ignore:${c.reset}   ${yamlColl.ignore.join(', ')}`);
     }
+    if (yamlColl?.includeDotDirs?.length) {
+      console.log(`  ${c.dim}Include-dot-dirs:${c.reset} ${yamlColl.includeDotDirs.map(d => `.${d}`).join(', ')}`);
+    }
     console.log(`  ${c.dim}Files:${c.reset}    ${coll.active_count}`);
     console.log(`  ${c.dim}Updated:${c.reset}  ${timeAgo}`);
     console.log();
@@ -1596,7 +1600,7 @@ async function collectionAdd(pwd: string, globPattern: string, name?: string): P
   // Create the collection and index files
   console.log(`Creating collection '${collName}'...`);
   const newColl = getCollectionFromYaml(collName);
-  await indexFiles(pwd, globPattern, collName, false, newColl?.ignore);
+  await indexFiles(pwd, globPattern, collName, false, newColl?.ignore, newColl?.includeDotDirs);
   console.log(`${c.green}✓${c.reset} Collection '${collName}' created successfully`);
 }
 
@@ -1649,7 +1653,7 @@ function collectionRename(oldName: string, newName: string): void {
   console.log(`  Virtual paths updated: ${c.cyan}qmd://${oldName}/${c.reset} → ${c.cyan}qmd://${newName}/${c.reset}`);
 }
 
-async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, collectionName?: string, suppressEmbedNotice: boolean = false, ignorePatterns?: string[]): Promise<void> {
+async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, collectionName?: string, suppressEmbedNotice: boolean = false, ignorePatterns?: string[], includeDotDirs?: string[]): Promise<void> {
   const db = getDb();
   const resolvedPwd = pwd || getPwd();
   const now = new Date().toISOString();
@@ -1670,18 +1674,7 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
     ...excludeDirs.map(d => `**/${d}/**`),
     ...(ignorePatterns || []),
   ];
-  const allFiles: string[] = await fastGlob(globPattern, {
-    cwd: resolvedPwd,
-    onlyFiles: true,
-    followSymbolicLinks: false,
-    dot: false,
-    ignore: allIgnore,
-  });
-  // Filter hidden files/folders (dot: false handles top-level but not nested)
-  const files = allFiles.filter(file => {
-    const parts = file.split("/");
-    return !parts.some(part => part.startsWith("."));
-  });
+  const files = await globCollectionFiles(globPattern, { cwd: resolvedPwd, ignore: allIgnore, includeDotDirs });
 
   const total = files.length;
   const hasNoFiles = total === 0;
@@ -4198,6 +4191,30 @@ if (isMain) {
           break;
         }
 
+        case "include-dot-dirs": {
+          const name = cli.args[1];
+          const dirs = cli.args.slice(2).map(d => d.replace(/^\.+/, "")).filter(Boolean);
+          if (!name) {
+            console.error("Usage: qmd collection include-dot-dirs <name> [dir ...]");
+            console.error("  Crawl these otherwise-hidden directory names during indexing (e.g. 'claude' for .claude/)");
+            console.error("  Omit dirs to clear the list (hidden directories stay excluded by default)");
+            process.exit(1);
+          }
+          const { updateCollectionSettings, getCollection } = await import("../collections.js");
+          const col = getCollection(name);
+          if (!col) {
+            console.error(`Collection not found: ${name}`);
+            process.exit(1);
+          }
+          updateCollectionSettings(name, { includeDotDirs: dirs.length ? dirs : null });
+          if (dirs.length) {
+            console.log(`✓ Collection '${name}' now includes dot-directories: ${dirs.map(d => `.${d}`).join(', ')}`);
+          } else {
+            console.log(`✓ Cleared dot-directory allow-list for '${name}'`);
+          }
+          break;
+        }
+
         case "include":
         case "exclude": {
           const name = cli.args[1];
@@ -4235,6 +4252,12 @@ if (isMain) {
           console.log(`  Path:     ${col.path}`);
           console.log(`  Pattern:  ${col.pattern}`);
           console.log(`  Include:  ${col.includeByDefault !== false ? 'yes (default)' : 'no'}`);
+          if (col.ignore?.length) {
+            console.log(`  Ignore:   ${col.ignore.join(', ')}`);
+          }
+          if (col.includeDotDirs?.length) {
+            console.log(`  Include-dot-dirs: ${col.includeDotDirs.map(d => `.${d}`).join(', ')}`);
+          }
           if (col.update) {
             console.log(`  Update:   ${col.update}`);
           }
@@ -4256,12 +4279,16 @@ if (isMain) {
           console.log("  rename <old> <new>        Rename a collection");
           console.log("  show <name>               Show collection details");
           console.log("  update-cmd <name> [cmd]   Set pre-update command (e.g., 'git pull')");
+          console.log("  include-dot-dirs <name> [dir ...]");
+          console.log("                            Crawl these hidden directory names (e.g. 'claude' for .claude/)");
+          console.log("                            despite the default dotdirectory exclusion; omit to clear");
           console.log("  include <name>            Include in default queries");
           console.log("  exclude <name>            Exclude from default queries");
           console.log("");
           console.log("Examples:");
           console.log("  qmd collection add ~/notes --name notes");
           console.log("  qmd collection update-cmd brain 'git pull'");
+          console.log("  qmd collection include-dot-dirs notes claude");
           console.log("  qmd collection exclude archive");
           process.exit(0);
         }

@@ -65,6 +65,7 @@ import {
   type RankedListMeta,
 } from "../src/store.js";
 import type { CollectionConfig } from "../src/collections.js";
+import { getCollection as getCollectionFromYaml } from "../src/collections.js";
 
 // =============================================================================
 // LlamaCpp Setup
@@ -194,7 +195,7 @@ async function syncTestConfig(): Promise<void> {
 
 // Helper to create a test collection in YAML config
 async function createTestCollection(
-  options: { pwd?: string; glob?: string; name?: string; ignore?: string[] } = {}
+  options: { pwd?: string; glob?: string; name?: string; ignore?: string[]; includeDotDirs?: string[] } = {}
 ): Promise<string> {
   const pwd = options.pwd || "/test/collection";
   const glob = options.glob || "**/*.md";
@@ -211,6 +212,7 @@ async function createTestCollection(
     path: pwd,
     pattern: glob,
     ...(options.ignore ? { ignore: options.ignore } : {}),
+    ...(options.includeDotDirs ? { includeDotDirs: options.includeDotDirs } : {}),
   };
 
   // Write back
@@ -2770,6 +2772,88 @@ describe("Integration", () => {
 
       expect(counts).toEqual({ active: 2, inactive: 3, total: 5 });
       expect(contentCount.count).toBe(5);
+    } finally {
+      await rm(collectionDir, { recursive: true, force: true });
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("reindexCollection indexes .claude/ only for collections configured with includeDotDirs", async () => {
+    const store = await createTestStore();
+    const collectionDir = await mkdtemp(join(testDir, "dotdir-regression-"));
+    const collectionName = "dotdir-regression-configured";
+
+    try {
+      await writeFile(join(collectionDir, "README.md"), "# Top-level doc");
+
+      // Would-be allow-listed dir: only indexed once a collection opts in via config.
+      await mkdir(join(collectionDir, ".claude"), { recursive: true });
+      await writeFile(join(collectionDir, ".claude", "CLAUDE.md"), "# Root project instructions");
+      await mkdir(join(collectionDir, "nested", ".claude"), { recursive: true });
+      await writeFile(join(collectionDir, "nested", ".claude", "CLAUDE.md"), "# Nested project instructions");
+
+      // Never allow-listed: must stay excluded regardless of config.
+      await mkdir(join(collectionDir, ".venv", "site-packages"), { recursive: true });
+      await writeFile(join(collectionDir, ".venv", "site-packages", "README.md"), "# Vendored package doc");
+      await mkdir(join(collectionDir, ".git"), { recursive: true });
+      await writeFile(join(collectionDir, ".git", "COMMIT_EDITMSG.md"), "# Not a real doc");
+
+      // Configure this collection's YAML entry with includeDotDirs: ["claude"] — the same
+      // config field `qmd collection include-dot-dirs <name> claude` writes, and the same
+      // field updateCollections() reads via `yamlCol?.includeDotDirs` on `qmd update`.
+      await createTestCollection({
+        pwd: collectionDir,
+        glob: "**/*.md",
+        name: collectionName,
+        includeDotDirs: ["claude"],
+      });
+      const yamlColl = getCollectionFromYaml(collectionName);
+      expect(yamlColl?.includeDotDirs).toEqual(["claude"]);
+
+      const result = await reindexCollection(store, collectionDir, "**/*.md", collectionName, {
+        includeDotDirs: yamlColl?.includeDotDirs,
+      });
+      expect(result.indexed).toBe(3);
+
+      const docs = store.db.prepare(`SELECT doc FROM content`).all() as { doc: string }[];
+      const bodies = docs.map(d => d.doc);
+
+      expect(bodies).toContain("# Top-level doc");
+      expect(bodies).toContain("# Root project instructions");
+      expect(bodies).toContain("# Nested project instructions");
+      expect(bodies).not.toContain("# Vendored package doc");
+      expect(bodies).not.toContain("# Not a real doc");
+    } finally {
+      await rm(collectionDir, { recursive: true, force: true });
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("reindexCollection still excludes .claude/ for a collection with no includeDotDirs configured", async () => {
+    const store = await createTestStore();
+    const collectionDir = await mkdtemp(join(testDir, "dotdir-regression-"));
+    const collectionName = "dotdir-regression-unconfigured";
+
+    try {
+      await writeFile(join(collectionDir, "README.md"), "# Top-level doc");
+      await mkdir(join(collectionDir, ".claude"), { recursive: true });
+      await writeFile(join(collectionDir, ".claude", "CLAUDE.md"), "# Root project instructions");
+
+      // No includeDotDirs set — this is the default for every existing collection.
+      await createTestCollection({ pwd: collectionDir, glob: "**/*.md", name: collectionName });
+      const yamlColl = getCollectionFromYaml(collectionName);
+      expect(yamlColl?.includeDotDirs).toBeUndefined();
+
+      const result = await reindexCollection(store, collectionDir, "**/*.md", collectionName, {
+        includeDotDirs: yamlColl?.includeDotDirs,
+      });
+      expect(result.indexed).toBe(1);
+
+      const docs = store.db.prepare(`SELECT doc FROM content`).all() as { doc: string }[];
+      const bodies = docs.map(d => d.doc);
+
+      expect(bodies).toContain("# Top-level doc");
+      expect(bodies).not.toContain("# Root project instructions");
     } finally {
       await rm(collectionDir, { recursive: true, force: true });
       await cleanupTestDb(store);
