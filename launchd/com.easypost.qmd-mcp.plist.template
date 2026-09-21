@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template for the `qmd mcp --http` per-user LaunchAgent.
+
+  Mirrors ~/src/bigquery/launchd/com.easypost.bigquery-mcp-local.plist.template.
+  This file is checked into the repo verbatim — it is NOT a real plist and is
+  never loaded directly. It contains literal `__TOKEN__`-style placeholders
+  that `just launchd-install` substitutes at install time into a real plist
+  written to ~/Library/LaunchAgents/. Do not hand-edit the rendered plist;
+  re-run `just launchd-install` instead so the substitution stays in sync
+  with this template.
+
+  Placeholders:
+    __QMD_BIN_PATH__  Absolute path to the installed `qmd` binary.
+    __PATH__          The installing shell's $PATH (launchd agents do not
+                       inherit an interactive shell's PATH).
+    __PORT__          HTTP port the daemon listens on (default 8181).
+    __LOG_DIR__       ~/Library/Logs/qmd-mcp (created by the install recipe
+                       if missing).
+    __HOME_DIR__      The installing user's $HOME, used as WorkingDirectory
+                       so the daemon doesn't depend on being launched from
+                       any particular cwd.
+
+  Note: ProgramArguments runs `qmd mcp --http` in the FOREGROUND, not
+  `--daemon` — launchd is the supervisor here (RunAtLoad + KeepAlive), so the
+  process must not self-daemonize/fork away or launchd loses track of it.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.easypost.qmd-mcp</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__QMD_BIN_PATH__</string>
+        <string>mcp</string>
+        <string>--http</string>
+        <string>--port</string>
+        <string>__PORT__</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Restart on crash, but not after a deliberate clean exit (e.g. `launchctl bootout`). -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>__PATH__</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>__LOG_DIR__/stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>__LOG_DIR__/stderr.log</string>
+
+    <key>WorkingDirectory</key>
+    <string>__HOME_DIR__</string>
+</dict>
+</plist>
