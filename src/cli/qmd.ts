@@ -5172,6 +5172,24 @@ if (isMain) {
         // async cleanup handlers in startMcpHttpServer actually run.
         process.removeAllListeners("SIGTERM");
         process.removeAllListeners("SIGINT");
+
+        // Guard: refuse to start if another qmd MCP HTTP process is already
+        // running for this index (identity-checked — recycled PIDs are stale).
+        // Mirrors the --daemon branch's guard (above) so a supervisor-launched
+        // `qmd mcp --http` (e.g. launchd) gets the same one-process lock —
+        // launchd only prevents launchd-vs-launchd duplication, not a manual
+        // CLI invocation racing against the supervised instance.
+        if (existsSync(pidPath)) {
+          const existingPid = parseInt(readFileSync(pidPath, "utf-8").trim());
+          if (isQmdMcpPid(existingPid)) {
+            console.error(`Already running (PID ${existingPid}). Run 'qmd mcp stop' first.`);
+            process.exit(1);
+          }
+          try { unlinkSync(pidPath); } catch { /* ignore */ }
+        }
+        mkdirSync(cacheDir, { recursive: true });
+        writeFileSync(pidPath, String(process.pid));
+
         // Best-effort: if this process owns the daemon pidfile, unlink on exit
         // (covers SIGTERM/SIGINT via startMcpHttpServer's process.exit).
         const unlinkOwnPidfile = () => {
