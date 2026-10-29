@@ -4831,7 +4831,7 @@ if (isMain) {
 
         case "include-dot-dirs": {
           const name = cli.args[1];
-          const dirs = cli.args.slice(2).map(d => d.replace(/^\.+/, "")).filter(Boolean);
+          const dirs = cli.args.slice(2).map(d => d.replace(/^\./, ""));
           if (!name) {
             console.error("Usage: qmd collection include-dot-dirs <name> [dir ...]");
             console.error("  Crawl these otherwise-hidden directory names during indexing (e.g. 'claude' for .claude/)");
@@ -4844,7 +4844,12 @@ if (isMain) {
             console.error(`Collection not found: ${name}`);
             process.exit(1);
           }
-          updateCollectionSettings(name, { includeDotDirs: dirs.length ? dirs : null });
+          try {
+            updateCollectionSettings(name, { includeDotDirs: dirs.length ? dirs : null });
+          } catch (error) {
+            console.error(error instanceof Error ? error.message : String(error));
+            process.exit(1);
+          }
           if (dirs.length) {
             console.log(`✓ Collection '${name}' now includes dot-directories: ${dirs.map(d => `.${d}`).join(', ')}`);
           } else {

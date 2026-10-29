@@ -53,6 +53,7 @@ import {
   isDocid,
   syncConfigToDb,
   reindexCollection,
+  globCollectionFiles,
   resolveVirtualPath,
   STRONG_SIGNAL_MIN_SCORE,
   STRONG_SIGNAL_MIN_GAP,
@@ -4330,6 +4331,48 @@ describe("Integration", () => {
     } finally {
       await rm(collectionDir, { recursive: true, force: true });
       await cleanupTestDb(store);
+    }
+  });
+
+  test("hidden directory opt-in preserves masks, pruning, and hidden file exclusion", async () => {
+    const collectionDir = await mkdtemp(join(testDir, "dotdir-masks-"));
+    const forbidden = join(collectionDir, ".forbidden");
+    try {
+      for (const path of [
+        "README.md", ".claude/public.md", ".claude/private.md", ".claude/.secret.md", ".a+b/public.md",
+        ".claude/nested/.agents/public.md", ".claude/.forbidden/public.md",
+        "nested/.claude/public.md", "nested/.agents/public.md",
+        ".forbidden/public.md", "visible/.claude",
+        "node_modules/.claude/public.md", ".git/.claude/public.md",
+      ]) {
+        const fullPath = join(collectionDir, path);
+        await mkdir(join(fullPath, ".."), { recursive: true });
+        await writeFile(fullPath, "# Document");
+      }
+      await chmod(forbidden, 0o000);
+      const options = {
+        cwd: collectionDir,
+        includeDotDirs: ["claude", "agents", "a+b"],
+        ignore: ["**/node_modules/**", "**/.git/**"],
+      };
+      expect((await globCollectionFiles("**/*.md,!**/private.md", options)).sort()).toEqual([
+        ".a+b/public.md", ".claude/nested/.agents/public.md", ".claude/public.md", "README.md",
+        "nested/.agents/public.md", "nested/.claude/public.md",
+      ].sort());
+      expect(await globCollectionFiles("README.md", options)).toEqual(["README.md"]);
+      expect(await globCollectionFiles(".claude/*.md", options)).toEqual([
+        ".claude/private.md", ".claude/public.md",
+      ]);
+      expect((await globCollectionFiles("**/*", { ...options, ignore: [...options.ignore, "**/.claude/**"] })).sort()).toEqual([
+        ".a+b/public.md", "README.md", "nested/.agents/public.md",
+      ].sort());
+      expect(await globCollectionFiles("**/*.md", { cwd: collectionDir, ignore: [] })).toEqual(["README.md"]);
+      expect(await globCollectionFiles(".claude/*.md", { cwd: collectionDir, ignore: [] })).toEqual([]);
+      await expect(globCollectionFiles("**/*.md", { ...options, includeDotDirs: ["*"] })).rejects.toThrow("literal directory names");
+      await expect(globCollectionFiles("**/*.md", { ...options, includeDotDirs: Array(1) })).rejects.toThrow("literal directory names");
+    } finally {
+      await chmod(forbidden, 0o755);
+      await rm(collectionDir, { recursive: true, force: true });
     }
   });
 
