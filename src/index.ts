@@ -549,7 +549,12 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
 
     // Collection Management — write to SQLite + write-through to YAML/inline if configured
     addCollection: async (name, opts) => {
-      upsertStoreCollection(db, name, opts);
+      upsertStoreCollection(db, name, {
+        path: opts.path,
+        pattern: opts.pattern,
+        ignore: opts.ignore,
+        includeDotDirs: opts.includeDotDirs,
+      });
       if (hasYamlConfig || options.config) {
         collectionsAddCollection(name, opts.path, opts.pattern);
         if (opts.includeDotDirs !== undefined) {

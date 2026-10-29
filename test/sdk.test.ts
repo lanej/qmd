@@ -902,7 +902,17 @@ describe("update", () => {
       }
       expect(await store.listCollections()).toEqual([]);
       expect(YAML.parse(readFileSync(configPath, "utf8"))).toEqual({ collections: {} });
-      await store.addCollection("valid", { path: docsDir, includeDotDirs: ["claude", "claude", "agent notes"] });
+      const widerCollection = {
+        path: docsDir,
+        pattern: "**/*.md",
+        includeDotDirs: ["claude", "claude", "agent notes"],
+        context: { "/": "Unsupported context" },
+        update: "echo unsupported",
+        includeByDefault: false,
+      };
+      await store.addCollection("valid", widerCollection);
+      expect(store.internal.db.prepare("SELECT context, update_command, include_by_default FROM store_collections WHERE name = 'valid'").get())
+        .toEqual({ context: null, update_command: null, include_by_default: 1 });
       expect(YAML.parse(readFileSync(configPath, "utf8")).collections.valid.includeDotDirs)
         .toEqual(["claude", "agent notes"]);
       const invalidYaml = readFileSync(configPath, "utf8").replace("agent notes", "a*");
