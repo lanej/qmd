@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- `qmd mcp --http --daemon` accepts its own parent-written PID file while continuing to reject another live QMD process for the same index.
 - `qmd doctor` selects vector sample identities before loading document bodies,
   avoiding excessive SQLite memory use on large indexes with duplicate paths.
   #978 (thanks @naveenspark)

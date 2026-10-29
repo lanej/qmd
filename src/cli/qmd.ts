@@ -5181,7 +5181,8 @@ if (isMain) {
         // CLI invocation racing against the supervised instance.
         if (existsSync(pidPath)) {
           const existingPid = parseInt(readFileSync(pidPath, "utf-8").trim());
-          if (isQmdMcpPid(existingPid)) {
+          // WHY: The --daemon parent already records this child's PID before startup.
+          if (existingPid !== process.pid && isQmdMcpPid(existingPid)) {
             console.error(`Already running (PID ${existingPid}). Run 'qmd mcp stop' first.`);
             process.exit(1);
           }
